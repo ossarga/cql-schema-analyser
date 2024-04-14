@@ -4,21 +4,21 @@ import re
 
 class SchemaParser:
     field_statement_to_state_mapping = {
-        '(': 'START_FIELD_DEF',
-        'PRIMARY': 'PRIMARY_STATEMENT',
-        'KEY': 'KEY_STATEMENT',
-        ')': 'END_FIELD_DEF'
+        '(': 'START_SCOPE_DEF',
+        'PRIMARY': 'PRIMARY_CLAUSE',
+        'KEY': 'KEY_CLAUSE',
+        ')': 'END_SCOPE_DEF'
     }
 
     properties_statement_to_state_mapping = {
-        'COMPACT': 'COMPACT_STATEMENT',
-        'STORAGE': 'STORAGE_STATEMENT',
-        'CLUSTERING': 'CLUSTERING_STATEMENT',
-        'ORDER': 'ORDER_STATEMENT',
-        'BY': 'BY_STATEMENT',
-        'DESC': 'DESC_STATEMENT',
-        'ASC': 'ASC_STATEMENT',
-        'AND': 'AND_STATEMENT'
+        'COMPACT': 'COMPACT_CLAUSE',
+        'STORAGE': 'STORAGE_CLAUSE',
+        'CLUSTERING': 'CLUSTERING_CLAUSE',
+        'ORDER': 'ORDER_CLAUSE',
+        'BY': 'BY_CLAUSE',
+        'DESC': 'DESC_CLAUSE',
+        'ASC': 'ASC_CLAUSE',
+        'AND': 'AND_CLAUSE'
     }
 
     def __init__(self):
@@ -94,15 +94,15 @@ class SchemaParser:
             try:
                 current_state = SchemaParser.properties_statement_to_state_mapping[clean_statement]
             except KeyError:
-                if previous_state == 'AND_STATEMENT':
+                if previous_state == 'AND_CLAUSE':
                     current_state = 'TABLE_OPTION_DEF'
                 elif previous_state == 'TABLE_OPTION_DEF':
                     current_state = 'TABLE_OPTION_DEF'
-                elif previous_state == 'BY_STATEMENT':
-                    current_state = 'ORDER_BY_FIELD'
-                elif previous_state == 'DESC_STATEMENT' or previous_state == 'ASC_STATEMENT':
+                elif previous_state == 'BY_CLAUSE':
+                    current_state = 'ORDER_BY_COLUMN'
+                elif previous_state == 'DESC_CLAUSE' or previous_state == 'ASC_CLAUSE':
                     if order_by_stack > 0:
-                        current_state = 'ORDER_BY_FIELD'
+                        current_state = 'ORDER_BY_COLUMN'
                     else:
                         print(
                             'ERROR: Malformed CQL detected. Expecting "AND" statement, but found "{}".'.format(
@@ -113,31 +113,31 @@ class SchemaParser:
                     current_state = 'TABLE_OPTION_DEF'
 
             # Take action based on the state we are in
-            if current_state == 'COMPACT_STATEMENT':
-                previous_state = 'COMPACT_STATEMENT'
-            elif current_state == 'STORAGE_STATEMENT':
-                previous_state = 'STORAGE_STATEMENT'
-            elif current_state == 'CLUSTERING_STATEMENT':
-                previous_state = 'CLUSTERING_STATEMENT'
-            elif current_state == 'ORDER_STATEMENT':
-                previous_state = 'ORDER_STATEMENT'
-            elif current_state == 'BY_STATEMENT':
-                previous_state = 'BY_STATEMENT'
-            elif current_state == 'ORDER_BY_FIELD':
+            if current_state == 'COMPACT_CLAUSE':
+                previous_state = 'COMPACT_CLAUSE'
+            elif current_state == 'STORAGE_CLAUSE':
+                previous_state = 'STORAGE_CLAUSE'
+            elif current_state == 'CLUSTERING_CLAUSE':
+                previous_state = 'CLUSTERING_CLAUSE'
+            elif current_state == 'ORDER_CLAUSE':
+                previous_state = 'ORDER_CLAUSE'
+            elif current_state == 'BY_CLAUSE':
+                previous_state = 'BY_CLAUSE'
+            elif current_state == 'ORDER_BY_COLUMN':
                 order_by_stack += table_options_statement.count('(')
-                previous_state = 'ORDER_BY_FIELD'
-            elif current_state == 'DESC_STATEMENT':
+                previous_state = 'ORDER_BY_COLUMN'
+            elif current_state == 'DESC_CLAUSE':
                 order_by_stack -= table_options_statement.count(')')
-                previous_state = 'DESC_STATEMENT'
-            elif current_state == 'ASC_STATEMENT':
+                previous_state = 'DESC_CLAUSE'
+            elif current_state == 'ASC_CLAUSE':
                 order_by_stack -= table_options_statement.count(')')
-                previous_state = 'ASC_STATEMENT'
-            elif current_state == 'AND_STATEMENT':
+                previous_state = 'ASC_CLAUSE'
+            elif current_state == 'AND_CLAUSE':
                 if previous_state == 'TABLE_OPTION_DEF':
                     dom_object['attributes']['properties'][option_key_buffer] = option_value_buffer
                     option_key_buffer = ''
                     option_value_buffer = ''
-                previous_state = 'AND_STATEMENT'
+                previous_state = 'AND_CLAUSE'
             elif current_state == 'TABLE_OPTION_DEF':
                 key_value_pair = clean_statement.split('=')
                 if len(key_value_pair) > 1:
@@ -167,17 +167,17 @@ class SchemaParser:
             try:
                 current_state = SchemaParser.field_statement_to_state_mapping[table_def_statement]
             except KeyError:
-                if previous_state == 'START_FIELD_DEF':
-                    current_state = 'FIELD_DEF_NAME'
-                elif previous_state == 'FIELD_DEF_NAME':
+                if previous_state == 'START_SCOPE_DEF':
+                    current_state = 'COLUMN_NAME_DEF'
+                elif previous_state == 'COLUMN_NAME_DEF':
                     current_state = 'FIELD_DEF_TYPE'
                 elif previous_state == 'FIELD_DEF_TYPE':
-                    current_state = 'FIELD_DEF_NAME'
-                elif previous_state == 'KEY_STATEMENT':
+                    current_state = 'COLUMN_NAME_DEF'
+                elif previous_state == 'KEY_CLAUSE':
                     current_state = 'PRIMARY_KEY_DEF'
                 elif previous_state == 'PRIMARY_KEY_DEF':
                     if primary_key_scope_stack == 0:
-                        current_state = 'FIELD_DEF_NAME'
+                        current_state = 'COLUMN_NAME_DEF'
                     else:
                         current_state = 'PRIMARY_KEY_DEF'
                 else:
@@ -188,22 +188,22 @@ class SchemaParser:
                     )
 
             # Take action based on the state we are in
-            if current_state == 'START_FIELD_DEF':
+            if current_state == 'START_SCOPE_DEF':
                 if table_def_scope_stack == -1:
                     table_def_scope_stack = 0
                 table_def_scope_stack += table_def_statement.count('(')
-                previous_state = 'START_FIELD_DEF'
-            elif current_state == 'FIELD_DEF_NAME':
-                previous_state = 'FIELD_DEF_NAME'
+                previous_state = 'START_SCOPE_DEF'
+            elif current_state == 'COLUMN_NAME_DEF':
+                previous_state = 'COLUMN_NAME_DEF'
             elif current_state == 'FIELD_DEF_TYPE':
                 table_type = table_def_statement.rstrip(',')
                 field_def[previous_value] = table_type
                 dom_object['attributes']['fields'].append(table_type)
                 previous_state = 'FIELD_DEF_TYPE'
-            elif current_state == 'PRIMARY_STATEMENT':
-                previous_state = 'PRIMARY_STATEMENT'
-            elif current_state == 'KEY_STATEMENT':
-                previous_state = 'KEY_STATEMENT'
+            elif current_state == 'PRIMARY_CLAUSE':
+                previous_state = 'PRIMARY_CLAUSE'
+            elif current_state == 'KEY_CLAUSE':
+                previous_state = 'KEY_CLAUSE'
             elif current_state == 'PRIMARY_KEY_DEF':
                 primary_key_scope_stack += table_def_statement.count('(')
                 primary_key_scope_stack -= table_def_statement.count(')')
@@ -215,7 +215,7 @@ class SchemaParser:
                     dom_object['attributes']['key']['clustering'].append(field_type)
 
                 previous_state = 'PRIMARY_KEY_DEF'
-            elif current_state == 'END_FIELD_DEF':
+            elif current_state == 'END_SCOPE_DEF':
                 table_def_scope_stack -= table_def_statement.count(')')
 
             previous_value = table_def_statement

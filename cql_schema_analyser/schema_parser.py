@@ -3,62 +3,113 @@ import re
 
 
 class SchemaParser:
-    field_statement_to_state_mapping = {
-        '(': 'START_SCOPE_DEF',
+    column_grammar_to_state_mapping = {
+        'ascii': 'COLUMN_TYPE_DEF',
+        'bigint': 'COLUMN_TYPE_DEF',
+        'blob': 'COLUMN_TYPE_DEF',
+        'boolean': 'COLUMN_TYPE_DEF',
+        'counter': 'COLUMN_TYPE_DEF',
+        'date': 'COLUMN_TYPE_DEF',
+        'decimal': 'COLUMN_TYPE_DEF',
+        'double': 'COLUMN_TYPE_DEF',
+        'duration': 'COLUMN_TYPE_DEF',
+        'float': 'COLUMN_TYPE_DEF',
+        'inet': 'COLUMN_TYPE_DEF',
+        'int': 'COLUMN_TYPE_DEF',
+        'smallint': 'COLUMN_TYPE_DEF',
+        'text': 'COLUMN_TYPE_DEF',
+        'time': 'COLUMN_TYPE_DEF',
+        'timestamp': 'COLUMN_TYPE_DEF',
+        'timeuuid': 'COLUMN_TYPE_DEF',
+        'tinyint': 'COLUMN_TYPE_DEF',
+        'uuid': 'COLUMN_TYPE_DEF',
+        'varchar': 'COLUMN_TYPE_DEF',
+        'varint': 'COLUMN_TYPE_DEF',
+        'list': 'COLUMN_TYPE_DEF',
+        'frozen': 'COLUMN_TYPE_DEF',
+        'map': 'COLUMN_TYPE_DEF',
+        'set': 'COLUMN_TYPE_DEF',
+        'tuple': 'COLUMN_TYPE_DEF',
         'PRIMARY': 'PRIMARY_CLAUSE',
         'KEY': 'KEY_CLAUSE',
-        ')': 'END_SCOPE_DEF'
-    }
-
-    properties_statement_to_state_mapping = {
-        'COMPACT': 'COMPACT_CLAUSE',
-        'STORAGE': 'STORAGE_CLAUSE',
-        'CLUSTERING': 'CLUSTERING_CLAUSE',
-        'ORDER': 'ORDER_CLAUSE',
-        'BY': 'BY_CLAUSE',
-        'DESC': 'DESC_CLAUSE',
-        'ASC': 'ASC_CLAUSE',
-        'AND': 'AND_CLAUSE'
+        '(': 'START_SCOPE_TABLE_DEF',
+        ')': 'END_SCOPE_TABLE_DEF',
+        '<': 'START_SCOPE_COLUMN_TYPE_DEF',
+        '>': 'END_SCOPE_COLUMN_TYPE_DEF',
+        ',': 'TERM_SEPARATOR',
+        ';': 'END_STATEMENT'
     }
 
     def __init__(self):
-        self.keyspace = ''
-        self.table = ''
+        self.current_keyspace = ''
+        self.current_table_parts = ()
+        self.keyspaces = set()
         self.statement_raw = ''
         self.statement_terms = []
         self.dom = []
 
         self.parse_statement_callback = {
-            'CREATE': self.__parse_create_statement,
-            'USE': self.__parse_use_statement
+            'create': self.__parse_create_statement,
+            'use': self.__parse_use_statement,
         }
 
         self.parse_create_statement_callback = {
-            'KEYSPACE': self.__parse_create_keyspace_statement,
-            'TABLE': self.__parse_create_table_statement
+            'keyspace': self.__parse_create_keyspace_statement,
+            'table': self.__parse_create_table_statement,
         }
 
+        self.scope = ''
+        self.scope_stack = 0
+        self.column_def_stack = 0
+        self.column_name = ''
+        self.column_type = ''
+        self.column_type_lookup = {}
+
     def __reset_parser_state(self):
-        self.keyspace = ''
+        self.current_keyspace = ''
+        self.keyspaces = set()
         self.table = ''
         self.statement_raw = ''
         self.statement_terms = []
         self.dom = []
 
-    def __set_keyspace(self, keyspace_str):
-        print('Setting keyspace to "{}".'.format(keyspace_str))
-        keyspace = keyspace_str
-        if keyspace[-1] == ';':
-            keyspace = keyspace[0:-1]
+    def __set_keyspace(self):
+        term_item = self.statement_terms.pop()
+        if term_item[0].isalnum() and term_item.lower() != 'with':
+            print('Setting keyspace to "{}".'.format(term_item))
+            self.keyspaces.add(term_item)
+            self.current_keyspace = term_item
+        else:
+            raise ValueError('ERROR: Malformed keyspace definition. Skipping.')
 
-        self.keyspace = keyspace
+    def __set_table(self):
+        term_item = self.statement_terms.pop()
+
+        # Check if the table name is in the format <keyspace>.<table> and <keyspace> matches the current keyspace
+        if term_item in self.keyspaces:
+            separator = self.statement_terms.pop()
+            if separator == '.':
+                self.current_table_parts = (term_item, self.statement_terms.pop())
+            else:
+                raise ValueError('ERROR: Malformed "CREATE TABLE" statement found. Expecting table name to be in '
+                      'format <keyspace>.<table>. Dot separator is missing. Skipping.')
+        # Assume we just have a table name in the current keyspace
+        else:
+            if self.statement_terms[-1] == 'START_SCOPE_TABLE_DEF':
+                self.current_table_parts = (self.current_keyspace, term_item)
+            elif self.statement_terms[-1] == '.':
+                self.statement_terms.pop()
+                raise ValueError('ERROR: Unexpected keyspace "{}" found for table "{}". Skipping'.format(
+                    term_item,
+                    self.statement_terms.pop())
+                )
 
     def __parse_create_statement(self):
         if len(self.statement_terms) < 2:
             print('ERROR: Incomplete "CREATE" statement found. Skipping.')
             return
 
-        create_statement = self.statement_terms[1]
+        create_statement = self.statement_terms.pop().lower()
 
         try:
             self.parse_create_statement_callback[create_statement]()
@@ -70,177 +121,147 @@ class SchemaParser:
             print('ERROR: Incomplete "USE" statement found. Skipping.')
             return
 
-        self.__set_keyspace(self.statement_terms[1])
+        try:
+            self.__set_keyspace()
+        except ValueError as e:
+            print(e)
 
     def __parse_create_keyspace_statement(self):
         if len(self.statement_terms) < 3:
             print('ERROR: Incomplete "CREATE KEYSPACE" statement found. Skipping.')
             return
 
-        self.__set_keyspace(self.statement_terms[2])
+        try:
+            self.__set_keyspace()
+        except ValueError as e:
+            print(e)
 
-    def __parse_create_table_statement_properties(self, dom_object):
-        # Parse the fields
-        current_state = ''
-        previous_state = ''
-        order_by_stack = 0
-        option_key_buffer = ''
-        option_value_buffer = ''
-        while len(self.statement_terms) > 0:
-            table_options_statement = self.statement_terms.pop()
-            clean_statement = re.sub(r'\(|\)|;', '', table_options_statement)
-
-            # Work out what state we should be in
-            try:
-                current_state = SchemaParser.properties_statement_to_state_mapping[clean_statement]
-            except KeyError:
-                if previous_state == 'AND_CLAUSE':
-                    current_state = 'TABLE_OPTION_DEF'
-                elif previous_state == 'TABLE_OPTION_DEF':
-                    current_state = 'TABLE_OPTION_DEF'
-                elif previous_state == 'BY_CLAUSE':
-                    current_state = 'ORDER_BY_COLUMN'
-                elif previous_state == 'DESC_CLAUSE' or previous_state == 'ASC_CLAUSE':
-                    if order_by_stack > 0:
-                        current_state = 'ORDER_BY_COLUMN'
+    def __parse_create_table_statement_column_def(self, current_state, previous_state, term_item, dom_object):
+        if current_state == 'START_SCOPE_TABLE_DEF':
+            self.scope_stack += 1
+            if previous_state == 'KEY_CLAUSE':
+                if len(dom_object['attributes']['key']['partition']):
+                    raise ValueError('ERROR: Multiple primary keys found. Skipping.')
+                else:
+                    self.scope = 'PARTITION_KEY_DEF'
+        elif current_state == 'COLUMN_NAME_DEF':
+            self.column_name = term_item
+        elif current_state == 'COLUMN_TYPE_DEF':
+            if previous_state == 'COLUMN_NAME_DEF':
+                self.column_type = term_item
+            elif previous_state in ['TERM_SEPARATOR', 'START_SCOPE_COLUMN_TYPE_DEF']:
+                self.column_type += term_item
+        elif current_state == 'START_SCOPE_COLUMN_TYPE_DEF':
+            self.column_def_stack += 1
+            self.column_type += term_item
+        elif current_state == 'END_SCOPE_COLUMN_TYPE_DEF':
+            self.column_def_stack -= 1
+            self.column_type += term_item
+        elif current_state == 'TERM_SEPARATOR':
+            if previous_state == 'COLUMN_TYPE_DEF' and self.column_def_stack > 0:
+                self.column_type += term_item
+            else:
+                self.column_type_lookup[self.column_name] = self.column_type
+                dom_object['attributes']['columns'].append(self.column_type)
+                if previous_state == 'KEY_CLAUSE':
+                    if len(dom_object['attributes']['key']['partition']):
+                        raise ValueError('ERROR: Multiple primary keys found. Skipping.')
                     else:
-                        print(
-                            'ERROR: Malformed CQL detected. Expecting "AND" statement, but found "{}".'.format(
-                                table_options_statement
-                            )
-                        )
-                else:
-                    current_state = 'TABLE_OPTION_DEF'
+                        dom_object['attributes']['key']['partition'].append(self.column_type)
+        elif current_state == 'PRIMARY_CLAUSE':
+            pass
+        elif current_state == 'KEY_CLAUSE':
+            if previous_state != 'PRIMARY_CLAUSE':
+                raise ValueError('ERROR: Unexpected "KEY" clause found. Skipping.')
+        elif current_state == 'END_SCOPE_TABLE_DEF':
+            self.scope_stack -= 1
+            dom_object['attributes']['columns'].append(self.column_type)
+            if self.scope_stack == 0:
+                if not len(dom_object['attributes']['key']['partition']):
+                    raise ValueError('ERROR: No primary key found. Skipping.')
 
-            # Take action based on the state we are in
-            if current_state == 'COMPACT_CLAUSE':
-                previous_state = 'COMPACT_CLAUSE'
-            elif current_state == 'STORAGE_CLAUSE':
-                previous_state = 'STORAGE_CLAUSE'
-            elif current_state == 'CLUSTERING_CLAUSE':
-                previous_state = 'CLUSTERING_CLAUSE'
-            elif current_state == 'ORDER_CLAUSE':
-                previous_state = 'ORDER_CLAUSE'
-            elif current_state == 'BY_CLAUSE':
-                previous_state = 'BY_CLAUSE'
-            elif current_state == 'ORDER_BY_COLUMN':
-                order_by_stack += table_options_statement.count('(')
-                previous_state = 'ORDER_BY_COLUMN'
-            elif current_state == 'DESC_CLAUSE':
-                order_by_stack -= table_options_statement.count(')')
-                previous_state = 'DESC_CLAUSE'
-            elif current_state == 'ASC_CLAUSE':
-                order_by_stack -= table_options_statement.count(')')
-                previous_state = 'ASC_CLAUSE'
-            elif current_state == 'AND_CLAUSE':
-                if previous_state == 'TABLE_OPTION_DEF':
-                    dom_object['attributes']['properties'][option_key_buffer] = option_value_buffer
-                    option_key_buffer = ''
-                    option_value_buffer = ''
-                previous_state = 'AND_CLAUSE'
-            elif current_state == 'TABLE_OPTION_DEF':
-                key_value_pair = clean_statement.split('=')
-                if len(key_value_pair) > 1:
-                    option_key_buffer = key_value_pair[0]
-                    option_value_buffer += key_value_pair[1]
-                else:
-                    option_value_buffer += ' {}'.format(key_value_pair[0])
 
-                if table_options_statement[-1] == ';':
-                    dom_object['attributes']['properties'][option_key_buffer] = option_value_buffer
-                    break
-                else:
-                    previous_state = 'TABLE_OPTION_DEF'
+    def __parse_create_table_statement_partition_def(self, current_state, previous_state, term_item, dom_object):
+        if current_state == 'COLUMN_NAME_DEF':
+            self.column_name = term_item
+        elif current_state == 'START_SCOPE_TABLE_DEF':
+            self.scope_stack += 1
+            if self.scope_stack > 3:
+                raise ValueError('ERROR: Unexpected "(" found. Skipping.')
+        elif current_state == 'TERM_SEPARATOR':
+            dom_object['attributes']['key']['partition'].append(self.column_type_lookup[self.column_name])
+            if self.scope_stack == 2:
+                self.scope = 'CLUSTERING_KEY_DEF'
+        elif current_state == 'END_SCOPE_TABLE_DEF':
+            dom_object['attributes']['key']['partition'].append(self.column_type_lookup[self.column_name])
+            self.scope_stack -= 1
+            if self.scope_stack == 1:
+                self.scope = 'TABLE_COLUMN_DEF'
+            elif self.scope_stack == 2:
+                self.scope = 'CLUSTERING_KEY_DEF'
 
-    def __parse_create_table_statement_fields(self, dom_object):
-        # Parse the fields
-        current_state = ''
-        previous_state = ''
-        table_def_scope_stack = -1
-        primary_key_scope_stack = 0
-        previous_value = ''
-        field_def = {}
-        while len(self.statement_terms) > 0 and not table_def_scope_stack == 0:
-            table_def_statement = self.statement_terms.pop()
+    def __parse_create_table_statement_clustering_def(self, current_state, previous_state, term_item, dom_object):
+        if current_state == 'COLUMN_NAME_DEF':
+            self.column_name = term_item
+        elif current_state == 'TERM_SEPARATOR':
+            if previous_state == 'COLUMN_NAME_DEF':
+                dom_object['attributes']['key']['clustering'].append(self.column_type_lookup[self.column_name])
+        elif current_state == 'END_SCOPE_TABLE_DEF':
+            self.scope_stack -= 1
+            if self.scope_stack == 1:
+                dom_object['attributes']['key']['clustering'].append(self.column_type_lookup[self.column_name])
+                self.scope = 'TABLE_COLUMN_DEF'
+            else:
+                raise ValueError('ERROR: Unexpected ")" found. Skipping.')
 
-            # Work out what state we should be in
+    def __parse_create_table_statement_columns(self, dom_object):
+        term_item = self.statement_terms.pop()
+        if term_item == '(':
+            current_state = None
+            previous_state = None
+            self.scope = 'TABLE_COLUMN_DEF'
+            self.scope_stack = 1
+        else:
+            print('ERROR: Malformed "CREATE TABLE" statement found. Expecting table definition to be in the format '
+                  '("<field_name> <field_type>, ..."). Skipping.')
+            return
+
+        while len(self.statement_terms) > 0 and self.scope_stack > 0:
+            term_item = self.statement_terms.pop()
+
             try:
-                current_state = SchemaParser.field_statement_to_state_mapping[table_def_statement]
-            except KeyError:
-                if previous_state == 'START_SCOPE_DEF':
-                    current_state = 'COLUMN_NAME_DEF'
-                elif previous_state == 'COLUMN_NAME_DEF':
-                    current_state = 'FIELD_DEF_TYPE'
-                elif previous_state == 'FIELD_DEF_TYPE':
-                    current_state = 'COLUMN_NAME_DEF'
-                elif previous_state == 'KEY_CLAUSE':
-                    current_state = 'PRIMARY_KEY_DEF'
-                elif previous_state == 'PRIMARY_KEY_DEF':
-                    if primary_key_scope_stack == 0:
-                        current_state = 'COLUMN_NAME_DEF'
-                    else:
-                        current_state = 'PRIMARY_KEY_DEF'
-                else:
-                    print(
-                        'ERROR: Unexpected previous state "{}" found due to statement "{}".'.format(
-                            previous_state, table_def_statement
-                        )
-                    )
+                current_state = SchemaParser.column_grammar_to_state_mapping[term_item]
+            except KeyError as e:
+                current_state = 'COLUMN_NAME_DEF'
 
-            # Take action based on the state we are in
-            if current_state == 'START_SCOPE_DEF':
-                if table_def_scope_stack == -1:
-                    table_def_scope_stack = 0
-                table_def_scope_stack += table_def_statement.count('(')
-                previous_state = 'START_SCOPE_DEF'
-            elif current_state == 'COLUMN_NAME_DEF':
-                previous_state = 'COLUMN_NAME_DEF'
-            elif current_state == 'FIELD_DEF_TYPE':
-                table_type = table_def_statement.rstrip(',')
-                field_def[previous_value] = table_type
-                dom_object['attributes']['fields'].append(table_type)
-                previous_state = 'FIELD_DEF_TYPE'
-            elif current_state == 'PRIMARY_CLAUSE':
-                previous_state = 'PRIMARY_CLAUSE'
-            elif current_state == 'KEY_CLAUSE':
-                previous_state = 'KEY_CLAUSE'
-            elif current_state == 'PRIMARY_KEY_DEF':
-                primary_key_scope_stack += table_def_statement.count('(')
-                primary_key_scope_stack -= table_def_statement.count(')')
-                field_name = table_def_statement.strip('(').strip(',').strip(')')
-                field_type = field_def[field_name]
-                if primary_key_scope_stack >= 1:
-                    dom_object['attributes']['key']['partition'].append(field_type)
-                else:
-                    dom_object['attributes']['key']['clustering'].append(field_type)
+            if self.scope == 'TABLE_COLUMN_DEF':
+                self.__parse_create_table_statement_column_def(current_state, previous_state, term_item, dom_object)
+            elif self.scope == 'PARTITION_KEY_DEF':
+                self.__parse_create_table_statement_partition_def(current_state, previous_state, term_item, dom_object)
+            elif self.scope == 'CLUSTERING_KEY_DEF':
+                self.__parse_create_table_statement_clustering_def(current_state, previous_state, term_item, dom_object)
 
-                previous_state = 'PRIMARY_KEY_DEF'
-            elif current_state == 'END_SCOPE_DEF':
-                table_def_scope_stack -= table_def_statement.count(')')
+            previous_state = current_state
 
-            previous_value = table_def_statement
-
-    # ['CREATE', 'TABLE', '"RAM"', '(', '"RAM_ID"', 'text,', '"RAM_DOC"', 'text,', 'PRIMARY', 'KEY', '(("RAM_ID"))', ')', 'WITH', 'bloom_filter_fp_chance=0.010000', 'AND', "caching='KEYS_ONLY'", 'AND', "comment=''", 'AND', 'dclocal_read_repair_chance=0.100000', 'AND', 'gc_grace_seconds=864000', 'AND', 'index_interval=128', 'AND', 'read_repair_chance=0.000000', 'AND', "replicate_on_write='true'", 'AND', "populate_io_cache_on_flush='false'", 'AND', 'default_time_to_live=0', 'AND', "speculative_retry='99.0PERCENTILE'", 'AND', 'memtable_flush_period_in_ms=0', 'AND', "compaction={'class':", "'SizeTieredCompactionStrategy'}", 'AND', "compression={'sstable_compression':", "'LZ4Compressor'};"]
-    # Parse table based on the assumption that schema was dumped using the "DESCRIBE SCHEMA;" command
     def __parse_create_table_statement(self):
-        self.statement_terms.reverse()
+        # Resolve the table name first before we check if we should skip this table
+        try:
+            self.__set_table()
+        except ValueError as e:
+            print(e)
+            return
 
-        # Remove "CREATE" and "TABLE" statements
-        assert self.statement_terms.pop() == 'CREATE'
-        assert self.statement_terms.pop() == 'TABLE'
-
-        self.table = self.statement_terms.pop()
-
-        if 'system' in self.keyspace or '"OpsCenter"' in self.keyspace:
+        if self.current_table_parts[0].split('_')[0].lower() in ['dse', 'opscenter', 'solr', 'system']:
             print('Table "{}" belongs to keyspace "{}". Skipping.'.format(
-                self.table, self.keyspace.strip('"'))
+                self.current_table_parts[1],
+                self.current_table_parts[0])
             )
             return
 
         dom_object = {
-            'name': '{}.{}'.format(self.keyspace, self.table),
+            'name': '{}.{}'.format(self.current_table_parts[0], self.current_table_parts[1]),
             'attributes': {
-                'fields': [],
+                'columns': [],
                 'key': {
                     'partition': [],
                     'clustering': []
@@ -250,26 +271,38 @@ class SchemaParser:
             'statement': self.statement_raw
         }
 
-        self.__parse_create_table_statement_fields(dom_object)
+        try:
+            self.__parse_create_table_statement_columns(dom_object)
+        except ValueError as e:
+            print(e)
+            return
 
-        assert self.statement_terms.pop() == 'WITH'
+        term_item = self.statement_terms.pop()
 
-        self.__parse_create_table_statement_properties(dom_object)
-        self.dom.append(dom_object)
+        if term_item in ['WITH', ';']:
+            self.dom.append(dom_object)
+        else:
+            print('ERROR: Malformed "CREATE TABLE" statement found. Expecting table properties to be in the format '
+                  'CREATE TABLE ... (...) WITH (<property>, ...); or CREATE TABLE ... (...);. Skipping.')
 
     def parse_schema(self, cql_file_path):
         with open(cql_file_path, 'r') as in_cql:
             for raw_line in in_cql:
                 statement_part = raw_line.strip()
-
                 if len(statement_part) == 0:
                     continue
 
                 self.statement_raw += raw_line
-                self.statement_terms += statement_part.split(' ')
 
-                if len(self.statement_terms) > 0 and self.statement_terms[-1][-1] == ';':
-                    cql_operation = self.statement_terms[0].upper()
+                for term_item in re.split(r'(\W)', raw_line):
+                    term_item = term_item.strip()
+                    if term_item and term_item not in ['\'', '"']:
+                        self.statement_terms.append(term_item)
+
+                if len(self.statement_terms) > 0 and self.statement_terms[-1] == ';':
+                    self.statement_terms.reverse()
+
+                    cql_operation = self.statement_terms.pop().lower()
 
                     try:
                         self.parse_statement_callback[cql_operation]()
